@@ -31,6 +31,13 @@ function engineBeneath(on: On) {
   return { statuses }
 }
 
+async function cardWpm($: Engine) {
+  const ui = await $.ui.mount({ plugin: 'typing-speed', surface: 'terminal', ...BAND })
+  const node = await ui.find({ type: 'Text', text: / WPM$/ })
+  await ui.unmount()
+  return node?.text.replace(/^\S+ /, '')
+}
+
 async function type($: Engine, clock: MockClock, draft: string, chars: string, msPerKey: number) {
   let text = draft
   for (const ch of chars) {
@@ -50,7 +57,9 @@ test('a typed prompt is measured into the all-time average', async ($, on) => {
   const text = await type($, clock, '', 'measure my typing speed!!', 240)
   await $.prompt.submit({ text, wait: false, origin: COMPOSER })
 
-  expect(statuses.at(-1)).toBe('⌨ avg 52 WPM · 🏆 52')
+  await clock.advance(1_000)
+  expect(await cardWpm($)).toBe('52 WPM')
+  expect(statuses.length).toBe(0)
 })
 
 test('pastes and thinking pauses are left out of the speed', async ($, on) => {
@@ -67,19 +76,20 @@ test('pastes and thinking pauses are left out of the speed', async ($, on) => {
   await $.prompt.submit({ text, wait: false, origin: COMPOSER })
 
   // 23 typed keys, 21 counted gaps of 240 ms (the 30 s pause and the paste are skipped).
-  expect(statuses.at(-1)).toBe('⌨ avg 55 WPM · 🏆 55')
+  await clock.advance(1_000)
+  expect(await cardWpm($)).toBe('55 WPM')
 })
 
 test('a pasted-only prompt is not measured', async ($, on) => {
   mock.clock(on, { now: START })
   mock.store(on)
-  const { statuses } = engineBeneath(on)
+  engineBeneath(on)
 
   const paste = 'only pasted text, nothing typed here'
   await editPrompt($, { origin: COMPOSER, text: '', cursor: 0, start: 0, end: 0, inputText: paste })
   await $.prompt.submit({ text: paste, wait: false, origin: COMPOSER })
 
-  expect(statuses.length).toBe(0)
+  expect(await cardWpm($)).toBeUndefined()
 })
 
 test('the band shows a live speedometer while typing', async ($, on) => {

@@ -23,8 +23,6 @@ The icon, colour and label follow your speed: 🐢 Warming up, 🚶 Steady, 🏃
 
 **`/typing`** opens a stats pane: your average and best, accuracy, words and time typed, a bar chart of the last 7 days and a sparkline of your recent prompts. `/typing reset` clears everything.
 
-The status line keeps a short summary: `⌨ avg 64 WPM · 🏆 92`.
-
 ## How it measures
 
 - **WPM** is the standard measure: typed characters ÷ 5 ÷ minutes.

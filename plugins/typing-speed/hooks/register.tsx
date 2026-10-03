@@ -68,9 +68,6 @@ async function loadBook($: EngineInterface): Promise<Book> {
   }
 }
 
-const statusLine = (b: Book) =>
-  `⌨ avg ${Math.round(averageWpm(b.allTime))} WPM · 🏆 ${Math.round(b.allTime.bestWpm)}`
-
 let book = emptyBook()
 let isBookLoaded = false
 let draft = emptyDraft()
@@ -131,7 +128,6 @@ async function record($: EngineInterface, stats: PromptStats, now: number): Prom
     update($, session, t => addToTotals(t, stats)),
     update($, last, () => stats),
   ])
-  $.ui.status(statusLine(book))
 
   return { stats, isNewBest: stats.wpm > previousBest, previousBest, average: averageWpm(book.allTime), shownAt: now }
 }
@@ -144,7 +140,6 @@ export const register: Register = on => {
       argumentHint: '[reset]',
     })
     await ensureBook($)
-    if (book.allTime.prompts > 0) $.ui.status(statusLine(book))
 
     return next(e)
   })
@@ -197,7 +192,6 @@ export const register: Register = on => {
         update($, session, () => emptyTotals()),
         update($, last, () => null),
       ])
-      $.ui.status(undefined)
       $.ui.invalidate('ui.render')
 
       return { text: '🧹 Typing stats cleared.' }
