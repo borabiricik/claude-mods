@@ -1,0 +1,12 @@
+{
+  "name": "borabiricik-mods",
+  "description": "Claude Code mods by Bora Biricik",
+  "owner": { "name": "Bora Biricik", "url": "https://github.com/borabiricik" },
+  "plugins": [
+    {
+      "name": "typing-speed",
+      "source": "./plugins/typing-speed",
+      "description": "Live typing speedometer, per-prompt result card and a /typing stats pane"
+    }
+  ]
+}
