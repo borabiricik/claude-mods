@@ -160,3 +160,32 @@ test('/typing opens a stats pane with the last 7 days', async ($, on) => {
     await ui.unmount()
   }
 })
+
+test('a bare slash command is not measured and shows no speedometer', async ($, on) => {
+  const clock = mock.clock(on, { now: START })
+  mock.store(on)
+  engineBeneath(on)
+
+  const text = await type($, clock, '', '/compact-the-conversation', 240)
+  const ui = await $.ui.mount({ plugin: 'typing-speed', surface: 'terminal', ...BAND })
+  expect(await ui.find({ type: 'Text', text: /WPM/ })).toBeUndefined()
+  await ui.unmount()
+
+  await $.prompt.submit({ text, wait: false, origin: COMPOSER })
+  await clock.advance(1_000)
+  expect(await cardWpm($)).toBeUndefined()
+})
+
+test("a slash command's arguments are measured without its name", async ($, on) => {
+  const clock = mock.clock(on, { now: START })
+  mock.store(on)
+  engineBeneath(on)
+
+  // The name is typed slowly; only the 25 argument keys at 240 ms count, as in the plain prompt.
+  let text = await type($, clock, '', '/info ', 1_000)
+  text = await type($, clock, text, 'measure my typing speed!!', 240)
+  await $.prompt.submit({ text, wait: false, origin: COMPOSER })
+
+  await clock.advance(1_000)
+  expect(await cardWpm($)).toBe('52 WPM')
+})

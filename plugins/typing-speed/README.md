@@ -29,7 +29,8 @@ The icon, colour and label follow your speed: 🐢 Warming up, 🚶 Steady, 🏃
 - **Pastes are not typing.** An insertion of 8 or more characters at once (a paste, a history recall) is shown as pasted and left out.
 - **Thinking time is not typing.** A pause of more than 5 seconds between keys is left out of the clock.
 - **Accuracy** is 1 − deleted ÷ typed characters.
-- Prompts shorter than 10 typed characters, slash commands and prompts you did not type are not measured.
+- **Slash command names are not typing.** In `/btw why is this slow?` only the arguments are measured; a bare command such as `/clear` is not measured at all.
+- Prompts shorter than 10 typed characters and prompts you did not type are not measured.
 
 Stats are kept in the mod's own store: all time, the last 30 days and your last 30 prompts.
 

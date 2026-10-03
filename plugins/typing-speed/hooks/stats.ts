@@ -56,6 +56,20 @@ export function applyEdit(draft: Draft, edit: Edit, now: number): Draft {
   }
 }
 
+// A slash command's name is typed from muscle memory and completed by Tab; only its arguments count.
+function commandNameEnd(text: string): number {
+  if (!text.startsWith('/')) return -1
+  const space = text.search(/\s/)
+  return space === -1 ? text.length : space
+}
+
+export const isCommandNameEdit = (textAfter: string, start: number) => start <= commandNameEnd(textAfter)
+
+export function argumentsOf(text: string): string {
+  const end = commandNameEnd(text)
+  return end === -1 ? text : text.slice(end)
+}
+
 export const wpmOf = (chars: number, ms: number) => (ms > 0 ? chars / CHARS_PER_WORD / (ms / 60_000) : 0)
 
 export function summarize(draft: Draft, submitted: string): PromptStats | null {

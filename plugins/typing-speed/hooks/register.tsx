@@ -5,6 +5,7 @@ import type { PromptStats, Totals } from '../types'
 import {
   addToTotals,
   applyEdit,
+  argumentsOf,
   averageWpm,
   dayKey,
   emptyDraft,
@@ -13,6 +14,7 @@ import {
   formatNumber,
   formatPrompt,
   formatTotals,
+  isCommandNameEdit,
   recordDay,
   summarize,
   wpmOf,
@@ -151,6 +153,7 @@ export const register: Register = on => {
       $.ui.invalidate('ui.render')
       return box
     }
+    if (isCommandNameEdit(box.text, e.start)) return box
 
     const before = draft
     draft = applyEdit(draft, e, now)
@@ -172,8 +175,7 @@ export const register: Register = on => {
     resetDraft()
     const entered = await next(e)
 
-    const isTyped = e.origin.kind === 'composer' && !e.text.trimStart().startsWith('/')
-    const stats = isTyped ? summarize(finished, e.text) : null
+    const stats = e.origin.kind === 'composer' ? summarize(finished, argumentsOf(e.text)) : null
     if (stats) card = await record($, stats, await $.clock.now())
     animate($)
 
