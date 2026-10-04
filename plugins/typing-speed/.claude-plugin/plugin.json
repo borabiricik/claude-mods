@@ -1,12 +1,12 @@
 {
   "name": "typing-speed",
   "displayName": "Typing Speed",
-  "version": "0.1.2",
-  "description": "A live typing speedometer above the prompt, a result card after each prompt (WPM, CPM, accuracy, personal bests) and a /typing stats pane",
+  "version": "0.2.0",
+  "description": "A live typing speedometer above the prompt, offline spell check in your system language, a result card after each prompt (WPM, CPM, accuracy, typos, personal bests) and a /typing stats pane",
   "author": { "name": "Bora Biricik", "url": "https://github.com/borabiricik" },
   "homepage": "https://github.com/borabiricik/claude-mods/tree/main/plugins/typing-speed",
   "repository": "https://github.com/borabiricik/claude-mods",
   "license": "MIT",
-  "keywords": ["mod", "typing", "wpm", "stats"],
+  "keywords": ["mod", "typing", "wpm", "stats", "spell-check"],
   "types": "./types/index.d.ts"
 }
