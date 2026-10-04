@@ -4,7 +4,7 @@
 
 | Mod | What it does |
 | --- | --- |
-| [typing-speed](plugins/typing-speed) | A live typing speedometer above the prompt, a result card after each prompt (WPM, CPM, accuracy, personal bests) and a `/typing` stats pane |
+| [typing-speed](plugins/typing-speed) | A live typing speedometer above the prompt, offline spell check in your system language, a result card after each prompt (WPM, CPM, accuracy, typos, personal bests) and a `/typing` stats pane |
 
 ## Install
 

@@ -1,5 +1,5 @@
 import { atom, read, update } from 'claude-code'
-import type { EngineInterface, Register, Timer } from 'claude-code'
+import type { EngineInterface, PromptEditResult, Register, Timer } from 'claude-code'
 
 import type { PromptStats, Totals } from '../types'
 import {
@@ -19,6 +19,11 @@ import {
   summarize,
   wpmOf,
 } from './stats'
+import { DICTIONARY_CHUNKS } from './dictionaries'
+import type { Language } from './dictionaries'
+import { SpellChecker, languagesOf } from './spell'
+import type { Speller, Word } from './spell'
+import nspell from './vendor/nspell.js'
 import {
   GAUGE_MAX_WPM,
   RAINBOW,
@@ -40,6 +45,8 @@ const last = atom({ plugin: 'typing-speed', key: 'last' } as const, null)
 const ALL_TIME_KEY = 'allTime'
 const DAYS_KEY = 'days'
 const RECENT_KEY = 'recent'
+const SPELL_KEY = 'spellCheck'
+const PERSONAL_WORDS_KEY = 'personalWords'
 const PANE = 'typing-stats'
 
 const TICK_MS = 100
@@ -51,9 +58,23 @@ const SAMPLE_EVERY_TICKS = 3
 const SAMPLES_KEPT = 24
 const RECENT_KEPT = 30
 const MIN_CHARS_FOR_HUD = 3
+const HINT_DELAY_MS = 400
+const HINT_STEP_MS = 30
+const HINTS_SHOWN = 3
+const TYPO_COLOR = '#f7768e'
+const FIX_COLOR = '#9ece6a'
+const SPELL_USAGE = 'Usage: /typing spell [on | off | add <word> | remove <word>]'
 
 type Book = { allTime: Totals; days: Record<string, Totals>; recent: number[] }
-type Card = { stats: PromptStats; isNewBest: boolean; previousBest: number; average: number; shownAt: number }
+type Card = {
+  stats: PromptStats
+  isNewBest: boolean
+  previousBest: number
+  average: number
+  shownAt: number
+  typos: number | null
+}
+type Hint = { word: string; fix: string | undefined }
 
 const emptyBook = (): Book => ({ allTime: emptyTotals(), days: {}, recent: [] })
 
@@ -80,6 +101,14 @@ let lastKeyAt = 0
 let card: Card | null = null
 let ticker: Timer | null = null
 let ticks = 0
+// Spell check: null until the setting is read from the store.
+let isSpellOn: boolean | null = null
+let speller: SpellChecker | null = null
+let spellLoad: Promise<SpellChecker | null> | null = null
+let isSpellBroken = false
+let typos: Word[] = []
+let hints: Hint[] = []
+let hintTimer: Timer | null = null
 
 const isTyping = (now: number) => draft.typedChars >= MIN_CHARS_FOR_HUD && now - lastKeyAt < TYPING_FADE_MS
 const isCardShown = (now: number) => card !== null && now - card.shownAt < CARD_HIDE_MS
@@ -102,11 +131,171 @@ function animate($: EngineInterface) {
   ticker ??= $.clock.every(TICK_MS, () => void tick($))
 }
 
+const WINDOWS_LANGUAGES =
+  '[Globalization.CultureInfo]::CurrentUICulture.Name; try { (Get-WinUserLanguageList).LanguageTag } catch {}'
+const SYSTEM_QUERY_TIMEOUT_MS = 5_000
+
+// The system's preferred languages: macOS and Windows keep them outside the environment, Linux in it.
+async function systemLanguages($: EngineInterface): Promise<Language[]> {
+  const [os, language, all, messages, lang] = await Promise.all([
+    $.env.get('OS'),
+    $.env.get('LANGUAGE'),
+    $.env.get('LC_ALL'),
+    $.env.get('LC_MESSAGES'),
+    $.env.get('LANG'),
+  ])
+  const argv =
+    os === 'Windows_NT'
+      ? ['powershell.exe', '-NoProfile', '-NonInteractive', '-Command', WINDOWS_LANGUAGES]
+      : ['defaults', 'read', '-g', 'AppleLanguages']
+  const system = await $.process.run(argv, { timeoutMs: SYSTEM_QUERY_TIMEOUT_MS }).then(
+    r => (r.exitCode === 0 ? r.stdout : ''),
+    () => '',
+  )
+
+  return languagesOf([system, language, all, messages, lang].filter((v): v is string => Boolean(v)))
+}
+
+// A read is capped at 4 MiB, so a dictionary ships in chunks. They are joined and parsed once:
+// nspell's dictionary() rebuilds the compound rules from their compiled form on every later call,
+// and a second call leaves rules that accept every word.
+async function loadSpeller($: EngineInterface, language: Language): Promise<Speller> {
+  const dir = `${$.plugin.root}/dictionaries/${language}`
+  const aff = await $.fs.read(`${dir}/index.aff`)
+  const chunks: string[] = []
+  for (let i = 0; i < DICTIONARY_CHUNKS[language]; i++) {
+    const chunk = await $.fs.read(`${dir}/${i}.dic`)
+    chunks.push(i === 0 ? chunk : chunk.slice(chunk.indexOf('\n') + 1))
+  }
+  return nspell(aff, chunks.join(''))
+}
+
+async function loadSpellChecker($: EngineInterface, personal: readonly string[]): Promise<SpellChecker> {
+  const languages = await systemLanguages($)
+  const spellers: Speller[] = []
+  for (const language of languages) spellers.push(await loadSpeller($, language))
+  return new SpellChecker(spellers, languages, personal)
+}
+
+function resetTypos() {
+  typos = []
+  hints = []
+  hintTimer?.cancel()
+  hintTimer = null
+}
+
 function resetDraft() {
   draft = emptyDraft()
   keyTimes = []
   samples = []
   lastKeyAt = 0
+  resetTypos()
+}
+
+async function spellSetting($: EngineInterface): Promise<boolean> {
+  isSpellOn ??= (await $.store.get(SPELL_KEY)) !== false
+  return isSpellOn
+}
+
+// Loads once, in the background; a failed load is not retried until spell check is turned on again.
+function startSpellCheck($: EngineInterface): Promise<SpellChecker | null> {
+  spellLoad ??= (async () => {
+    if (!(await spellSetting($))) return null
+    const personal = ((await $.store.get(PERSONAL_WORDS_KEY)) as string[] | undefined) ?? []
+    const loaded = await loadSpellChecker($, personal)
+    if (isSpellOn) speller = loaded
+    return speller
+  })().catch((error: unknown) => {
+    isSpellBroken = true
+    try {
+      $.ui.log(`spell check unavailable: ${error instanceof Error ? error.message : String(error)}`, { to: 'debug' })
+    } catch {}
+    return null
+  })
+  return spellLoad
+}
+
+// Suggestions cost up to a few hundred milliseconds each, so they wait for a pause and are worked
+// out one word per timer step: a key pressed meanwhile is answered between steps.
+function scheduleHints($: EngineInterface) {
+  hintTimer?.cancel()
+  hintTimer = null
+  const checker = speller
+  const recent = typos.slice(-HINTS_SHOWN)
+  if (!checker || recent.length === 0) {
+    hints = []
+    return
+  }
+  const step = () => {
+    const pending = recent.find(t => !checker.hasSuggested(t.word))
+    if (pending) {
+      checker.suggest(pending.word)
+      hintTimer = $.clock.after(HINT_STEP_MS, step)
+      return
+    }
+    hintTimer = null
+    hints = recent.map(t => ({ word: t.word, fix: checker.suggest(t.word)[0] }))
+    $.ui.invalidate('ui.render')
+  }
+  hintTimer = $.clock.after(HINT_DELAY_MS, step)
+}
+
+function markTypos($: EngineInterface, box: PromptEditResult): PromptEditResult {
+  if (!speller) {
+    void startSpellCheck($)
+    return box
+  }
+  const before = typos.length
+  typos = speller.misspelled(box.text, box.cursor)
+  scheduleHints($)
+  if (typos.length !== before) $.ui.invalidate('ui.render')
+  if (typos.length === 0) return box
+
+  const marks = typos.map(t => ({ start: t.start, end: t.end, color: TYPO_COLOR, underline: true }))
+  return { ...box, decorations: [...(box.decorations ?? []), ...marks] }
+}
+
+const typoCountOf = (text: string) => (speller ? speller.misspelled(argumentsOf(text), -1).length : null)
+
+function spellSummary(): string {
+  if (isSpellOn === false) return 'off · /typing spell on turns it on'
+  if (!speller) return isSpellBroken ? 'on, but its dictionaries did not load; the debug log says why' : 'on · loading dictionaries'
+  const own = speller.personalWords.length
+  return `on · ${speller.languages.join(', ')}${own > 0 ? ` · ${own} words of your own` : ''} · /typing spell off turns it off`
+}
+
+async function spellCommand($: EngineInterface, args: readonly string[]): Promise<string> {
+  const [action, word, ...extra] = args
+  const isWordAction = action === 'add' || action === 'remove'
+  if (extra.length > 0 || (isWordAction ? !word : word !== undefined)) return SPELL_USAGE
+  if (action !== undefined && action !== 'on' && action !== 'off' && !isWordAction) return SPELL_USAGE
+
+  if (action === 'off') {
+    isSpellOn = false
+    speller = null
+    spellLoad = null
+    resetTypos()
+    await $.store.set(SPELL_KEY, false)
+    $.ui.invalidate('ui.render')
+    return '✎ Spell check off. /typing spell on turns it back on.'
+  }
+  if (action === 'on' && (!(await spellSetting($)) || isSpellBroken)) {
+    isSpellOn = true
+    isSpellBroken = false
+    spellLoad = null
+    await $.store.set(SPELL_KEY, true)
+  }
+  if (!(await spellSetting($))) return '✎ Spell check is off. /typing spell on turns it on.'
+
+  const checker = await startSpellCheck($)
+  if (!checker) return '✎ Spell check could not load its dictionaries; the debug log says why.'
+  if (isWordAction) {
+    if (action === 'add') checker.learn(word!)
+    else checker.forget(word!)
+    await $.store.set(PERSONAL_WORDS_KEY, checker.personalWords)
+    return action === 'add' ? `✎ "${word}" is now in your dictionary.` : `✎ "${word}" is out of your dictionary.`
+  }
+  return `✎ Spell check ${spellSummary()}`
 }
 
 async function ensureBook($: EngineInterface) {
@@ -115,7 +304,7 @@ async function ensureBook($: EngineInterface) {
   isBookLoaded = true
 }
 
-async function record($: EngineInterface, stats: PromptStats, now: number): Promise<Card> {
+async function record($: EngineInterface, stats: PromptStats, now: number, typos: number | null): Promise<Card> {
   await ensureBook($)
   const previousBest = book.allTime.bestWpm
   book = {
@@ -131,17 +320,18 @@ async function record($: EngineInterface, stats: PromptStats, now: number): Prom
     update($, last, () => stats),
   ])
 
-  return { stats, isNewBest: stats.wpm > previousBest, previousBest, average: averageWpm(book.allTime), shownAt: now }
+  return { stats, isNewBest: stats.wpm > previousBest, previousBest, average: averageWpm(book.allTime), shownAt: now, typos }
 }
 
 export const register: Register = on => {
   on('session.start', async ($, e, next) => {
     await $.command.register({
       name: 'typing',
-      description: 'Open your typing stats: averages, best, last 7 days and recent prompts',
-      argumentHint: '[reset]',
+      description: 'Open your typing stats; reset them; turn spell check on or off, or teach it a word',
+      argumentHint: '[reset | spell on|off|add <word>|remove <word>]',
     })
     await ensureBook($)
+    void startSpellCheck($)
 
     return next(e)
   })
@@ -153,7 +343,8 @@ export const register: Register = on => {
       $.ui.invalidate('ui.render')
       return box
     }
-    if (isCommandNameEdit(box.text, e.start)) return box
+    const marked = markTypos($, box)
+    if (isCommandNameEdit(box.text, e.start)) return marked
 
     const before = draft
     draft = applyEdit(draft, e, now)
@@ -167,7 +358,7 @@ export const register: Register = on => {
       animate($)
     }
 
-    return box
+    return marked
   })
 
   on('prompt.submit', async ($, e, next) => {
@@ -176,13 +367,15 @@ export const register: Register = on => {
     const entered = await next(e)
 
     const stats = e.origin.kind === 'composer' ? summarize(finished, argumentsOf(e.text)) : null
-    if (stats) card = await record($, stats, await $.clock.now())
+    if (stats) card = await record($, stats, await $.clock.now(), typoCountOf(e.text))
     animate($)
 
     return entered
   })
 
   on('command.run', { command: 'typing' }, async ($, e) => {
+    const [subcommand, ...args] = e.args.trim().split(/\s+/)
+    if (subcommand === 'spell') return { text: await spellCommand($, args) }
     if (e.args.trim() === 'reset') {
       book = emptyBook()
       isBookLoaded = true
@@ -237,6 +430,7 @@ export const register: Register = on => {
           </Box>
           {width >= 72 && samples.length > 0 && <Text color={tier.color}>{sparkline(samples, GAUGE_MAX_WPM)}</Text>}
           <Text color={tier.color} italic>{tier.label}</Text>
+          {typos.length > 0 && <Text color={TYPO_COLOR}>{`✗ ${typos.length}`}</Text>}
           {width >= 100 && (
             <Text dimColor>{`⏱ ${formatDuration(draft.activeMs)}  ✎ ${draft.typedChars}  🎯 ${accuracy}%`}</Text>
           )}
@@ -261,6 +455,11 @@ export const register: Register = on => {
             <Text dimColor={isDim}>{`🎯 ${Math.round(stats.accuracy * 100)}%`}</Text>
             <Text dimColor={isDim}>{`⏱ ${formatDuration(stats.activeMs)}`}</Text>
             <Text dimColor={isDim}>{`📝 ${stats.words} words`}</Text>
+            {card.typos !== null && (
+              <Text color={card.typos > 0 ? TYPO_COLOR : FIX_COLOR} dimColor={isDim}>
+                {card.typos > 0 ? `✗ ${card.typos} typo${card.typos === 1 ? '' : 's'}` : '✓ no typos'}
+              </Text>
+            )}
             {stats.pastedChars > 0 && <Text dimColor>{`📋 +${formatNumber(stats.pastedChars)} pasted`}</Text>}
           </Box>
           {card.isNewBest ? (
@@ -278,6 +477,23 @@ export const register: Register = on => {
               <Text dimColor>{`vs your ${Math.round(card.average)} WPM average · 🏆 ${Math.round(book.allTime.bestWpm)}`}</Text>
             </Box>
           )}
+        </Box>
+      )
+    }
+
+    const shown = hints.filter(hint => typos.some(t => t.word === hint.word))
+    if (shown.length > 0) {
+      return (
+        <Box flexDirection="row" flexWrap="wrap" columnGap={2}>
+          <Text color={TYPO_COLOR} bold>✗</Text>
+          {shown.map((hint, i) => (
+            <Box key={`${i}-${hint.word}`} flexDirection="row" columnGap={1}>
+              <Text color={TYPO_COLOR}>{hint.word}</Text>
+              <Text dimColor>→</Text>
+              {hint.fix ? <Text color={FIX_COLOR}>{hint.fix}</Text> : <Text dimColor>no suggestion</Text>}
+            </Box>
+          ))}
+          {typos.length > shown.length && <Text dimColor>{`+${typos.length - shown.length} more`}</Text>}
         </Box>
       )
     }
@@ -346,6 +562,11 @@ export const register: Register = on => {
         <Box flexDirection="column">
           <Text bold>This session</Text>
           <Text dimColor>{formatTotals(sessionTotals)}</Text>
+        </Box>
+
+        <Box flexDirection="column">
+          <Text bold>Spell check</Text>
+          <Text dimColor>{spellSummary()}</Text>
         </Box>
       </Box>
     )

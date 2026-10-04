@@ -6,7 +6,7 @@
     {
       "name": "typing-speed",
       "source": "./plugins/typing-speed",
-      "description": "Live typing speedometer, per-prompt result card and a /typing stats pane"
+      "description": "Live typing speedometer, offline spell check, per-prompt result card and a /typing stats pane"
     }
   ]
 }
